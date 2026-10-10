@@ -1,0 +1,65 @@
+# AGENTS.md
+
+Instructions for every AI agent working in this repository. Read this file
+before your first tool call. Persona files in `personas/` add voice and lane;
+they never override the rules here.
+
+## 1. Who decides what
+
+- **Humans decide:** product direction, scope changes, merges to `main`,
+  releases, deleting data, spending money, and anything irreversible.
+- **Agents execute:** investigate, plan, implement, test, review, and report.
+- When a decision is needed, stop and ask one narrow question. Do not bundle
+  five maybes into one message.
+
+## 2. Before you start a task
+
+1. Confirm the task has a short slug (for example `fix-login-redirect`).
+2. Create your own worktree (see `docs/WORKTREES.md`):
+   `git worktree add ../<repo>-<agent>-<slug> -b <agent>/<slug> origin/dev`
+3. Run `node scripts/check-worktree-integrity.mjs` inside it. If it fails, stop
+   and report Blocked. Do not "fix" a corrupted worktree by committing deletions.
+4. Load only the skills whose triggers match the task. Respect `risk_level`.
+
+## 3. While you work
+
+- Never work directly on `dev` or `main`. Never work in another agent's worktree.
+- Keep changes scoped to the task. Note unrelated problems; do not fix them in
+  the same branch.
+- Never commit secrets, tokens, `.env` files, or customer data. The pre-commit
+  hook and CI will catch most of it; do not rely on that.
+- Do not edit `.githooks/`, `.github/workflows/`, build config, or dependency
+  manifests without calling it out explicitly in the PR. Those changes get a
+  stricter review (see `skills/code-review-dispatch`).
+
+## 4. Before you claim done
+
+- Run the checks for real. The commit-msg hook requires a `Verification:` block
+  and checks it against evidence the pre-commit hook recorded:
+
+  ```
+  Verification:
+  - typecheck: pass
+  - tests: 12/12 pass
+  - scope: fix-login-redirect
+  ```
+
+- `skipped` and `fail` are honest answers. A false `pass` is the worst answer.
+- Open a PR against `dev` using the template. Fill in every checkbox truthfully.
+
+## 5. How you report
+
+End every work lane with exactly one of **Done**, **Blocked**, **Question**, or
+**FYI**. Format and rules: `personas/OPERATING-STANDARDS.md` and
+`overlays/status-and-judgment.md`.
+
+## 6. Stop means stop
+
+On stop, pause, or halt: make no new tool calls, save state, and report what
+you were doing, which step you reached, and what is left.
+
+## 7. Project specifics
+
+<!-- Fill in: how to install, build, typecheck, and test; where the code lives;
+     which directories are generated and must not be hand edited. Keep secrets,
+     hostnames, and credentials out of this file entirely. -->

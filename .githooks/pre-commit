@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# pre-commit: make verification mechanical.
+#
+# 1. Secret scan of the staged diff (gitleaks).
+# 2. Full-project typecheck when source files are staged.
+# 3. Tests: every staged test file, plus the adjacent test of every staged
+#    source file. Adjacency alone misses cross-file guard tests, which have no
+#    adjacent source; running staged tests directly closes that gap.
+# 4. Writes evidence files to .git/verification-log/ that the commit-msg hook
+#    checks, so "typecheck: pass" in a commit message is backed by a real run.
+#
+# Commands and patterns live in .githooks/hooks.conf.
+# Note: checks run against the working tree. Stage everything you intend to
+# commit, or stash the rest, so what passes is what you commit.
+#
+# Emergency bypass: git commit --no-verify (CI still runs).
+
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+conf="$root/.githooks/hooks.conf"
+
+VARS="TYPECHECK_CMD TEST_CMD SOURCE_PATTERN TEST_PATTERN TEST_CANDIDATES SECRET_SCAN"
+
+# Precedence: environment > hooks.conf > defaults below.
+for v in $VARS; do
+  if [[ -n "${!v+x}" ]]; then printf -v "__env_$v" '%s' "${!v}"; fi
+done
+TYPECHECK_CMD=""
+TEST_CMD=""
+SOURCE_PATTERN='\.(ts|tsx|js|jsx|mjs|cjs)$'
+TEST_PATTERN='\.test\.(ts|tsx|js|jsx|mjs|cjs)$'
+TEST_CANDIDATES='{dir}/{base}.test.{ext}'
+SECRET_SCAN=auto
+# shellcheck source=/dev/null
+if [[ -f "$conf" ]]; then source "$conf"; fi
+for v in $VARS; do
+  o="__env_$v"
+  if [[ -n "${!o+x}" ]]; then printf -v "$v" '%s' "${!o}"; fi
+done
+
+say() { echo "[pre-commit] $*"; }
+
+log_dir="$(git rev-parse --git-path verification-log)"
+mkdir -p "$log_dir"
+
+record() { # record <check> <pass|fail|skipped> [detail]
+  local check="$1" result="$2" detail="${3:-}"
+  rm -f "$log_dir/$check.pass" "$log_dir/$check.fail" "$log_dir/$check.skipped"
+  {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+    if [[ -n "$detail" ]]; then echo "$detail"; fi
+  } > "$log_dir/$check.$result"
+}
+
+# ---- 1. Secret scan -------------------------------------------------------
+if [[ "$SECRET_SCAN" != "off" ]]; then
+  gl="$(command -v gitleaks || true)"
+  if [[ -n "$gl" ]]; then
+    if ! "$gl" git --pre-commit --staged --no-banner --redact "$root" >/dev/null 2>"$log_dir/secret-scan.out"; then
+      cat "$log_dir/secret-scan.out" >&2
+      say "FAIL: possible secret in staged changes. Remove it (and rotate it if real)."
+      exit 1
+    fi
+    say "ok: secret scan clean"
+  elif [[ "$SECRET_SCAN" == "required" ]]; then
+    say "FAIL: SECRET_SCAN=required but gitleaks is not installed."
+    exit 1
+  else
+    say "warn: gitleaks not installed; staged secret scan skipped (CI still scans)."
+  fi
+fi
+
+# ---- Skip checks mid merge, rebase, or cherry-pick ------------------------
+gp() { git rev-parse --git-path "$1"; }
+if [[ -f "$(gp MERGE_HEAD)" || -f "$(gp CHERRY_PICK_HEAD)" || -f "$(gp REBASE_HEAD)" || -d "$(gp rebase-merge)" || -d "$(gp rebase-apply)" ]]; then
+  say "merge, rebase, or cherry-pick in progress; skipping typecheck and tests"
+  exit 0
+fi
+
+# ---- Staged source files --------------------------------------------------
+staged="$(git diff --cached --name-only --diff-filter=ACMR | grep -E "$SOURCE_PATTERN" || true)"
+if [[ -z "$staged" ]]; then
+  say "no source files staged; recording typecheck and tests as skipped"
+  record typecheck skipped "no source files staged"
+  record tests skipped "no source files staged"
+  exit 0
+fi
+count="$(printf '%s\n' "$staged" | wc -l | tr -d ' ')"
+
+# ---- 2. Typecheck ---------------------------------------------------------
+if [[ -z "$TYPECHECK_CMD" ]]; then
+  say "TYPECHECK_CMD is empty; typecheck skipped"
+  record typecheck skipped "TYPECHECK_CMD empty"
+else
+  say "typecheck ($count staged source file(s)): $TYPECHECK_CMD"
+  if ! (cd "$root" && bash -c "$TYPECHECK_CMD"); then
+    record typecheck fail "$TYPECHECK_CMD"
+    say "FAIL: typecheck failed."
+    exit 1
+  fi
+  record typecheck pass "$TYPECHECK_CMD"
+  say "ok: typecheck passed"
+fi
+
+# ---- 3. Staged and adjacent tests ----------------------------------------
+tests=""
+while IFS= read -r file; do
+  [[ -z "$file" ]] && continue
+  if [[ "$file" =~ $TEST_PATTERN ]]; then
+    tests+="$file"$'\n'
+    continue
+  fi
+  dir="$(dirname "$file")"
+  name="$(basename "$file")"
+  ext="${name##*.}"
+  base="${name%.*}"
+  for tpl in $TEST_CANDIDATES; do
+    cand="${tpl//\{dir\}/$dir}"
+    cand="${cand//\{base\}/$base}"
+    cand="${cand//\{ext\}/$ext}"
+    if [[ -f "$root/$cand" ]]; then tests+="$cand"$'\n'; fi
+  done
+done <<< "$staged"
+tests="$(printf '%s' "$tests" | grep -v '^$' | sort -u || true)"
+
+if [[ -z "$tests" ]]; then
+  say "no staged or adjacent tests found; tests skipped"
+  record tests skipped "no staged or adjacent tests"
+elif [[ -z "$TEST_CMD" ]]; then
+  say "TEST_CMD is empty; tests skipped"
+  record tests skipped "TEST_CMD empty"
+else
+  n="$(printf '%s\n' "$tests" | wc -l | tr -d ' ')"
+  say "running $n test file(s): $TEST_CMD"
+  # shellcheck disable=SC2086
+  if ! (cd "$root" && $TEST_CMD $(printf '%s\n' "$tests" | tr '\n' ' ')); then
+    record tests fail "$TEST_CMD"
+    say "FAIL: tests failed."
+    exit 1
+  fi
+  record tests pass "$TEST_CMD $(printf '%s\n' "$tests" | tr '\n' ' ')"
+  say "ok: tests passed"
+fi
+
+exit 0

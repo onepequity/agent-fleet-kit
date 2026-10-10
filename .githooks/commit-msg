@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# commit-msg: require a Verification: block backed by fresh evidence.
+#
+# Required in the commit message body:
+#
+#   Verification:
+#   - typecheck: pass | fail | skipped
+#   - tests: N/N pass | pass | fail | skipped
+#   - scope: <task slug>   or   out-of-scope: <one-line reason>
+#
+# A "pass" claim is accepted only if the pre-commit hook recorded a matching
+# pass evidence file in .git/verification-log/ within EVIDENCE_MAX_AGE seconds.
+# Claiming a pass that did not happen becomes mechanically impossible.
+#
+# Visible opt-out (shows up in history and is easy to audit):
+#   Verification: skipped (<one-line reason>)
+#
+# Merge, revert, fixup, squash, and amend! commits are not gated.
+
+set -euo pipefail
+
+msg_file="${1:-}"
+if [[ -z "$msg_file" || ! -f "$msg_file" ]]; then
+  echo "[commit-msg] no commit message file provided"
+  exit 0
+fi
+
+root="$(git rev-parse --show-toplevel)"
+conf="$root/.githooks/hooks.conf"
+VARS="EVIDENCE_MAX_AGE SCOPE_REGISTRY"
+for v in $VARS; do
+  if [[ -n "${!v+x}" ]]; then printf -v "__env_$v" '%s' "${!v}"; fi
+done
+EVIDENCE_MAX_AGE=120
+SCOPE_REGISTRY=""
+# shellcheck source=/dev/null
+if [[ -f "$conf" ]]; then source "$conf"; fi
+for v in $VARS; do
+  o="__env_$v"
+  if [[ -n "${!o+x}" ]]; then printf -v "$v" '%s' "${!o}"; fi
+done
+
+fail() {
+  echo "" >&2
+  echo "[commit-msg] FAIL: $*" >&2
+  echo "" >&2
+  exit 1
+}
+
+# Strip comment lines git adds to the editor buffer.
+body="$(grep -v '^#' "$msg_file" || true)"
+first_line="$(printf '%s\n' "$body" | head -1)"
+
+if [[ "$first_line" =~ ^(Merge|Revert|fixup!|squash!|amend!) ]]; then
+  exit 0
+fi
+gp() { git rev-parse --git-path "$1"; }
+if [[ -f "$(gp MERGE_HEAD)" || -f "$(gp CHERRY_PICK_HEAD)" || -f "$(gp REBASE_HEAD)" || -d "$(gp rebase-merge)" || -d "$(gp rebase-apply)" ]]; then
+  exit 0
+fi
+if printf '%s\n' "$body" | grep -qiE '^[[:space:]]*Verification:[[:space:]]*skipped[[:space:]]*\(.+\)'; then
+  echo "[commit-msg] Verification explicitly skipped (recorded in message)"
+  exit 0
+fi
+
+# ---- Parse the block -----------------------------------------------------
+typecheck=""
+tests=""
+scope=""
+in_block=0
+while IFS= read -r line; do
+  if [[ "$in_block" == 0 ]]; then
+    if [[ "$line" =~ ^[[:space:]]*[Vv]erification:[[:space:]]*$ ]]; then
+      in_block=1
+    fi
+    continue
+  fi
+  [[ -z "${line//[[:space:]]/}" ]] && break
+  [[ "$line" =~ ^[[:space:]]*- ]] || break
+  claim="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//')"
+  key="$(printf '%s' "${claim%%:*}" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+  value="$(printf '%s' "${claim#*:}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  case "$key" in
+    typecheck) typecheck="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" ;;
+    tests) tests="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" ;;
+    scope) scope="$value" ;;
+    out-of-scope) scope="out-of-scope: $value" ;;
+  esac
+done <<< "$body"
+
+if [[ "$in_block" == 0 ]]; then
+  cat >&2 <<'EOF'
+
+[commit-msg] FAIL: commit message is missing a Verification: block.
+
+Add, after a blank line:
+
+  Verification:
+  - typecheck: pass | fail | skipped
+  - tests: 9/9 pass | pass | fail | skipped
+  - scope: <task slug>  (or "out-of-scope: <reason>")
+
+Emergency opt-out, visible in history:
+  Verification: skipped (<one-line reason>)
+
+EOF
+  exit 1
+fi
+
+missing=""
+[[ -z "$typecheck" ]] && missing+=" typecheck"
+[[ -z "$tests" ]] && missing+=" tests"
+[[ -z "$scope" ]] && missing+=" scope"
+[[ -n "$missing" ]] && fail "Verification block is missing:$missing"
+
+# ---- Validate values -----------------------------------------------------
+case "$typecheck" in
+  pass|fail|skipped) ;;
+  *) fail "typecheck='$typecheck' must be pass, fail, or skipped" ;;
+esac
+
+# Allow a trailing hint such as "(npm test)" and ignore it.
+tests_core="$(printf '%s' "$tests" | sed -E 's/[[:space:]]*[([][^])]*[])][[:space:]]*$//' | tr -d ' ')"
+tests_kind=""
+if [[ "$tests_core" =~ ^(pass|fail|skipped)$ ]]; then
+  tests_kind="$tests_core"
+elif [[ "$tests_core" =~ ^([0-9]+)/([0-9]+)pass$ ]]; then
+  if [[ "${BASH_REMATCH[1]}" != "${BASH_REMATCH[2]}" ]]; then
+    fail "tests='$tests' is a partial pass. Claim 'fail' and say what failed."
+  fi
+  tests_kind="pass"
+elif [[ "$tests_core" =~ ^[0-9]+pass$ ]]; then
+  tests_kind="pass"
+else
+  fail "tests='$tests' must be 'N/N pass', 'pass', 'fail', or 'skipped'"
+fi
+
+if [[ "$scope" =~ ^out-of-scope:[[:space:]]*(.*)$ ]]; then
+  [[ -z "${BASH_REMATCH[1]}" ]] && fail "out-of-scope needs a one-line reason"
+elif [[ -n "$SCOPE_REGISTRY" && -f "$root/$SCOPE_REGISTRY" ]]; then
+  scope_id="${scope%% *}"
+  if ! grep -vE '^[[:space:]]*(#|$)' "$root/$SCOPE_REGISTRY" | sed -E 's/[[:space:]]+$//' | grep -qxF -- "$scope_id"; then
+    fail "scope '$scope_id' is not listed in $SCOPE_REGISTRY (or use 'out-of-scope: <reason>')"
+  fi
+fi
+
+# ---- Evidence for pass claims --------------------------------------------
+log_dir="$(git rev-parse --git-path verification-log)"
+now="$(date +%s)"
+
+check_fresh() { # check_fresh <check>
+  local f="$log_dir/$1.pass" mtime age
+  if [[ ! -f "$f" ]]; then
+    local actual="none"
+    [[ -f "$log_dir/$1.skipped" ]] && actual="skipped"
+    [[ -f "$log_dir/$1.fail" ]] && actual="fail"
+    fail "claimed '$1: pass' but the pre-commit hook recorded '$actual'. Change the claim or run the check."
+  fi
+  mtime="$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)"
+  age=$(( now - mtime ))
+  if (( age > EVIDENCE_MAX_AGE )); then
+    fail "'$1: pass' evidence is ${age}s old (max ${EVIDENCE_MAX_AGE}s). Re-run the commit so pre-commit runs again."
+  fi
+}
+
+[[ "$typecheck" == "pass" ]] && check_fresh typecheck
+[[ "$tests_kind" == "pass" ]] && check_fresh tests
+
+echo "[commit-msg] ok: verification validated (typecheck=$typecheck, tests=$tests_kind, scope=$scope)"
+exit 0

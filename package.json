@@ -1,0 +1,17 @@
+{
+  "name": "agent-fleet-kit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Template for running a disciplined fleet of AI engineering agents: personas, skills, review rules, git hooks, CI gates, worktree conventions.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test scripts/*.test.mjs",
+    "check:skills": "node scripts/check-skill-quality.mjs",
+    "check:worktree": "node scripts/check-worktree-integrity.mjs",
+    "hooks:install": "git config core.hooksPath .githooks"
+  }
+}

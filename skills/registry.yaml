@@ -1,0 +1,54 @@
+# Skills registry
+#
+# Source of truth for which skills exist, who owns them, how risky they are,
+# and how they are evaluated. scripts/check-skill-quality.mjs fails if a skill
+# directory has no entry here.
+#
+# Schema (per entry):
+#   slug            (required) matches skills/<slug>/ and the SKILL.md name
+#   status          (required) candidate | active | deprecated
+#   risk_level      (required) low | medium | high; must match SKILL.md frontmatter
+#   owner           (required) persona slug that maintains the skill
+#   personas        all, or a list of persona slugs allowed to load it
+#   path            (required) path to SKILL.md
+#   provenance      (required) path to provenance.md
+#   evals:
+#     routing       (required) JSONL of {prompt, expected_skill, should_use}
+#     smoke         optional notes or script proving the skill works end to end
+#   review_cadence  monthly | quarterly | on_change
+#   last_verified   ISO date of the last eval run
+#   notes           free text
+#
+# Promotion: candidate -> active requires passing routing evals, a smoke run,
+# and a reviewer sign-off recorded in provenance.md.
+
+version: 1
+skills:
+  - slug: _TEMPLATE
+    status: candidate
+    risk_level: low
+    owner: reviewer
+    personas: all
+    path: skills/_TEMPLATE/SKILL.md
+    provenance: skills/_TEMPLATE/provenance.md
+    evals:
+      routing: skills/_TEMPLATE/evals/routing.jsonl
+    review_cadence: on_change
+    notes: >-
+      Copy this directory to start a new skill. Kept in the registry so the
+      quality check exercises the template on every run.
+
+  - slug: code-review-dispatch
+    status: active
+    risk_level: low
+    owner: reviewer
+    personas: [reviewer, engineer]
+    path: skills/code-review-dispatch/SKILL.md
+    provenance: skills/code-review-dispatch/provenance.md
+    evals:
+      routing: skills/code-review-dispatch/evals/routing.jsonl
+    review_cadence: quarterly
+    last_verified: 2026-01-01
+    notes: >-
+      Judgment layer over the runtime's review tooling. Read only; it never
+      merges or edits the change under review.

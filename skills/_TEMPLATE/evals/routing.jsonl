@@ -1,0 +1,3 @@
+{"prompt":"a phrase a human or agent would actually say","expected_skill":"_TEMPLATE","should_use":true}
+{"prompt":"another distinct phrase for a different branch of the skill","expected_skill":"_TEMPLATE","should_use":true}
+{"prompt":"a nearby request that belongs to a different skill","expected_skill":"_TEMPLATE","should_use":false}

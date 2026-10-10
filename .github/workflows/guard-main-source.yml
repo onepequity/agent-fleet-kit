@@ -1,0 +1,90 @@
+name: Guard main branch source
+
+# Keeps main a strict subset of the release branch (default: dev).
+#
+#   pull_request -> main : fails unless the head branch is an allowed release source.
+#   push         -> main : fails unless the pushed commit came from a merged PR
+#                          whose head was an allowed release source. A push has
+#                          already happened by the time this runs, so this job
+#                          is the alarm; branch protection is the lock.
+#
+# Make it a lock: Settings -> Branches -> main -> require status check "guard",
+# and restrict who can push to main.
+#
+# Allowed sources: repository variable RELEASE_SOURCE_BRANCHES, space separated,
+# globs allowed (for example "dev release/*"). Defaults to "dev".
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check source branch
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          ALLOWED: ${{ vars.RELEASE_SOURCE_BRANCHES || 'dev' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          is_allowed() {
+            local ref="$1" pattern
+            for pattern in $ALLOWED; do
+              # Unquoted right side: bash glob match, so "release/*" works.
+              if [[ "$ref" == $pattern ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          reject() {
+            {
+              echo "## PR or push to main rejected by branch source guard"
+              echo
+              echo "$1"
+              echo
+              echo "Allowed release sources: \`$ALLOWED\`. See docs/BRANCHING.md."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$1"
+            exit 1
+          }
+
+          if [[ "$EVENT" == "pull_request" ]]; then
+            echo "PR head branch: $HEAD_REF"
+            if is_allowed "$HEAD_REF"; then
+              echo "::notice::PR from $HEAD_REF into main is allowed."
+              exit 0
+            fi
+            reject "PRs into main must come from a release source branch; got: $HEAD_REF"
+          fi
+
+          # push to main: find the merged PR that produced this commit.
+          heads=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+            --jq '.[] | select(.merged_at != null and .base.ref == "main") | .head.ref' || true)
+
+          if [[ -z "$heads" ]]; then
+            reject "Commit $SHA was pushed to main without a merged pull request."
+          fi
+
+          while IFS= read -r head; do
+            if is_allowed "$head"; then
+              echo "::notice::Commit $SHA came from a merged PR with head $head."
+              exit 0
+            fi
+          done <<< "$heads"
+
+          reject "Commit $SHA reached main from a non-release branch: $(echo "$heads" | tr '\n' ' ')"

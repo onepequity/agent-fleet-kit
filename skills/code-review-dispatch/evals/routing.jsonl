@@ -1,0 +1,6 @@
+{"prompt":"Review this PR before I merge it.","expected_skill":"code-review-dispatch","should_use":true}
+{"prompt":"Security review this auth and query change.","expected_skill":"code-review-dispatch","should_use":true}
+{"prompt":"Is this diff to the CI workflow safe to merge?","expected_skill":"code-review-dispatch","should_use":true}
+{"prompt":"Prepare the release PR from dev to main.","expected_skill":"code-review-dispatch","should_use":true}
+{"prompt":"Build a new settings page from scratch.","expected_skill":"code-review-dispatch","should_use":false}
+{"prompt":"Fix the failing login test.","expected_skill":"code-review-dispatch","should_use":false}
