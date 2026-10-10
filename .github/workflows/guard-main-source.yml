@@ -13,6 +13,9 @@ name: Guard main branch source
 #
 # Allowed sources: repository variable RELEASE_SOURCE_BRANCHES, space separated,
 # globs allowed (for example "dev release/*"). Defaults to "dev".
+#
+# Opt out (for example in a repo that commits straight to main): set the
+# repository variable MAIN_GUARD to "off".
 
 on:
   pull_request:
@@ -27,6 +30,7 @@ permissions:
 
 jobs:
   guard:
+    if: ${{ vars.MAIN_GUARD != 'off' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check source branch
